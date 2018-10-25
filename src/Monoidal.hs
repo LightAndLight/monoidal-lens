@@ -1,3 +1,4 @@
+{-# language FlexibleContexts #-}
 {-# language FlexibleInstances #-}
 {-# language DataKinds #-}
 {-# language ConstraintKinds, GADTs #-}
@@ -39,8 +40,40 @@ class Category (arr :: k -> k -> Type) => Product arr (p :: k -> k -> k) | p -> 
 prodAssoc :: Product arr p => p a (p b c) `arr` p (p a b) c
 prodAssoc = intro (intro fst (fst . snd)) (snd . snd)
 
+prodDeassoc :: Product arr p => p (p a b) c `arr` p a (p b c)
+prodDeassoc = intro (fst . fst) (intro (snd . fst) snd)
+
 prodSwap :: Product arr p => p a b `arr` p b a
 prodSwap = intro snd fst
+
+type family Fst a where; Fst '(a, b) = a
+type family Snd a where; Snd '(a, b) = b
+
+data ProdCat (arr :: i -> i -> Type) (arr' :: j -> j -> Type) (a :: (i, j)) (b :: (i, j))
+  = ProdCat (Fst a `arr` Fst b) (Snd a `arr'` Snd b)
+
+instance (Category arr, Category arr') => Category (ProdCat arr arr') where
+  id = ProdCat id id
+  ProdCat f g . ProdCat f' g' = ProdCat (f . f') (g . g')
+
+class (Category (Cod f), Category (Dom f)) => Functor (f :: i -> j) where
+  type Dom f :: i -> i -> Type
+  type Cod f :: j -> j -> Type
+  fmap :: Dom f a b -> Cod f (f a) (f b)
+
+bimap'
+  :: (Category p, Category q, Dom t ~ ProdCat p q, Functor t)
+  => ProdCat p q '(a, b) '(c, d)
+  -> Cod t (t '(a, b)) (t '(c, d))
+bimap' = fmap
+
+class (Category p, Category q, Category r) => Bifunctor p q r (f :: i -> j -> k)
+  | p q f -> r, p r f -> q, q r f -> p
+  where
+  bimap
+    :: (a `p` c)
+    -> (b `q` d)
+    -> (f a b `r` f c d)
 
 class Category (arr :: k -> k -> Type) => Coproduct arr (p :: k -> k -> k) | p -> arr where
   inl :: a `arr` p a b
@@ -63,6 +96,19 @@ class Category arr => Terminating (arr :: k -> k -> Type) where
   type Terminal arr :: k
   terminal :: a `arr` Terminal arr
 
+expCompose :: forall arr p e x y z. Exponential arr p e => p (e z y) (e y x) `arr` e z x
+expCompose =
+  curry $
+  apply .
+  intro @arr @p fst (apply . snd) .
+  prodDeassoc
+
+expId :: e a a
+expId = _
+
+expConst :: Exponential arr p e => e (e a b) a
+expConst = _
+
 powerOfOne_to :: (Terminating arr, Exponential arr p e) => e (Terminal arr) a `arr` Terminal arr
 powerOfOne_to = terminal
 
@@ -75,26 +121,20 @@ firstPower_to = apply . intro id terminal
 firstPower_from :: forall a arr p e. (Terminating arr, Exponential arr p e) => a `arr` e a (Terminal arr)
 firstPower_from = curry fst
 
-expProd_to :: forall arr p e z y x. Exponential arr p e => e (e z y) x `arr` e z (p y x)
-expProd_to =
+expUncurry :: forall arr p e z y x. Exponential arr p e => e (e z y) x `arr` e z (p y x)
+expUncurry =
   curry $
   apply . intro @arr @p (apply . fst) snd .
   prodAssoc . intro fst (prodSwap . snd)
 
-expProd_from :: forall arr p e z y x. Exponential arr p e => e z (p y x) `arr` e (e z y) x
-expProd_from = _
+expCurry :: forall arr p e z y x. Exponential arr p e => e z (p y x) `arr` e (e z y) x
+expCurry =
+  curry $
+  _ . intro @arr @p _ snd
 
 class Category arr => Initiating (arr :: k -> k -> Type) where
   type Initial arr :: k
   initial :: Initial arr `arr` a
-
-class (Category p, Category q, Category r) => Bifunctor p q r (f :: i -> j -> k)
-  | p r -> q, q r -> p -- no idea if these are correct
-  where
-  bimap
-    :: (a `p` b)
-    -> (c `q` d)
-    -> (f a c `r` f b d)
 
 first :: Bifunctor p q r f => p a b -> f a c `r` f b c
 first f = bimap f id
@@ -106,7 +146,7 @@ instance Bifunctor (->) (->) (->) Either where
   bimap f _ (Left a) = Left (f a)
   bimap _ g (Right a) = Right (g a)
 
-class Bifunctor arr arr arr t => Tensor arr (t :: k -> k -> k) where
+class (Category arr, Bifunctor arr arr arr t) => Tensor arr (t :: k -> k -> k) where
   type Unit t :: k
   assoc :: t (t a b) c `arr` t a (t b c)
   deassoc :: t a (t b c) `arr` t (t a b) c
@@ -116,12 +156,6 @@ class Bifunctor arr arr arr t => Tensor arr (t :: k -> k -> k) where
 
   unitRightTo :: t a (Unit t) `arr` a
   unitRightFrom :: a `arr` t a (Unit t)
-
-class Tensor arr t => Symmetric arr (t :: k -> k -> k) where
-  swap :: t a b `arr` t b a
-
--- left :: Bifunctor p q r t => p a b -> t a c `arr` t b c
--- left = _
 
 instance Tensor (->) Either where
   type Unit Either = Void
@@ -254,10 +288,12 @@ o
   -> Optic k p s t a b
 o = flip composeOptic
 
-set :: forall k p prod e s t a b. (Symmetric k p, Exponential k prod e) => Optic k p s t a b -> prod b s `k` t
 -- set (Optic o1) b = o1 $ \f g -> g . first (const b) . f
+
+set :: forall k p prod s t a b. (Tensor k p, Product k prod) => Optic k p s t a b -> prod b s `k` t
+-- set :: forall k p prod e s t a b. (Tensor k p, Exponential k prod e) => Optic k p s t a b -> e t (prod b s)
 set (Optic o1) =
-  o1 (\f g -> _ . intro @k @prod fst (f . snd))
+  o1 (\f g -> _)
 
 {-
 
