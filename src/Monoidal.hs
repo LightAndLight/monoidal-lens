@@ -1,27 +1,129 @@
+{-# language FlexibleInstances #-}
+{-# language DataKinds #-}
+{-# language ConstraintKinds, GADTs #-}
+{-# language MultiParamTypeClasses, FunctionalDependencies #-}
 {-# language TypeFamilies #-}
+{-# language TypeOperators #-}
 {-# language RankNTypes #-}
+{-# language PolyKinds #-}
+{-# language TypeInType #-}
+{-# language ScopedTypeVariables #-}
+{-# language TypeApplications #-}
 
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -O -fplugin Test.Inspection.Plugin #-}
 
 module Monoidal where
 
-import Data.Bifunctor
+import Prelude hiding (id, (.), Functor(..), const, uncurry, fst, snd, curry)
+import Data.Kind
 import Data.Void
 import Test.Inspection
 
-class Bifunctor t => Tensor t where
-  type Unit t
-  assoc :: t (t a b) c -> t a (t b c)
-  deassoc :: t a (t b c) -> t (t a b) c
+instance Category (->) where
+  id = \a -> a
+  (.) = \f g x -> f (g x)
 
-  unitLeftTo :: t (Unit t) a -> a
-  unitLeftFrom :: a -> t (Unit t) a
+class Category (arr :: k -> k -> Type) where
+  id :: a `arr` a
+  (.) :: b `arr` c -> a `arr` b -> a `arr` c
 
-  unitRightTo :: t a (Unit t) -> a
-  unitRightFrom :: a -> t a (Unit t)
+class Category (arr :: k -> k -> Type) => Product arr (p :: k -> k -> k) | p -> arr where
+  fst :: p a b `arr` a
+  snd :: p a b `arr` b
+  intro
+    :: y `arr` a
+    -> y `arr` b
+    -> y `arr` p a b
 
-instance Tensor Either where
+prodAssoc :: Product arr p => p a (p b c) `arr` p (p a b) c
+prodAssoc = intro (intro fst (fst . snd)) (snd . snd)
+
+prodSwap :: Product arr p => p a b `arr` p b a
+prodSwap = intro snd fst
+
+class Category (arr :: k -> k -> Type) => Coproduct arr (p :: k -> k -> k) | p -> arr where
+  inl :: a `arr` p a b
+  inr :: b `arr` p a b
+  elim
+    :: a `arr` y
+    -> b `arr` y
+    -> p a b `arr` y
+
+class Product (arr :: k -> k -> Type) p => Exponential arr p (e :: k -> k -> k)
+  | e -> arr p, arr -> p e -- not sure about this one
+  where
+  apply :: p (e z y) y `arr` z
+  curry :: p x y `arr` z -> x `arr` e z y
+
+uncurry :: Exponential arr p e => x `arr` e z y -> p x y `arr` z
+uncurry f = apply . intro (f . fst) snd
+
+class Category arr => Terminating (arr :: k -> k -> Type) where
+  type Terminal arr :: k
+  terminal :: a `arr` Terminal arr
+
+powerOfOne_to :: (Terminating arr, Exponential arr p e) => e (Terminal arr) a `arr` Terminal arr
+powerOfOne_to = terminal
+
+powerOfOne_from :: (Terminating arr, Exponential arr p e) => Terminal arr `arr` e (Terminal arr) a
+powerOfOne_from = curry fst
+
+firstPower_to :: forall a arr p e. (Terminating arr, Exponential arr p e) => e a (Terminal arr) `arr` a
+firstPower_to = apply . intro id terminal
+
+firstPower_from :: forall a arr p e. (Terminating arr, Exponential arr p e) => a `arr` e a (Terminal arr)
+firstPower_from = curry fst
+
+expProd_to :: forall arr p e z y x. Exponential arr p e => e (e z y) x `arr` e z (p y x)
+expProd_to =
+  curry $
+  apply . intro @arr @p (apply . fst) snd .
+  prodAssoc . intro fst (prodSwap . snd)
+
+expProd_from :: forall arr p e z y x. Exponential arr p e => e z (p y x) `arr` e (e z y) x
+expProd_from = _
+
+class Category arr => Initiating (arr :: k -> k -> Type) where
+  type Initial arr :: k
+  initial :: Initial arr `arr` a
+
+class (Category p, Category q, Category r) => Bifunctor p q r (f :: i -> j -> k)
+  | p r -> q, q r -> p -- no idea if these are correct
+  where
+  bimap
+    :: (a `p` b)
+    -> (c `q` d)
+    -> (f a c `r` f b d)
+
+first :: Bifunctor p q r f => p a b -> f a c `r` f b c
+first f = bimap f id
+
+second :: Bifunctor p q r f => q a b -> f c a `r` f c b
+second f = bimap id f
+
+instance Bifunctor (->) (->) (->) Either where
+  bimap f _ (Left a) = Left (f a)
+  bimap _ g (Right a) = Right (g a)
+
+class Bifunctor arr arr arr t => Tensor arr (t :: k -> k -> k) where
+  type Unit t :: k
+  assoc :: t (t a b) c `arr` t a (t b c)
+  deassoc :: t a (t b c) `arr` t (t a b) c
+
+  unitLeftTo :: t (Unit t) a `arr` a
+  unitLeftFrom :: a `arr` t (Unit t) a
+
+  unitRightTo :: t a (Unit t) `arr` a
+  unitRightFrom :: a `arr` t a (Unit t)
+
+class Tensor arr t => Symmetric arr (t :: k -> k -> k) where
+  swap :: t a b `arr` t b a
+
+-- left :: Bifunctor p q r t => p a b -> t a c `arr` t b c
+-- left = _
+
+instance Tensor (->) Either where
   type Unit Either = Void
   assoc (Left (Left a)) = Left a
   assoc (Left (Right a)) = Right (Left a)
@@ -39,16 +141,16 @@ instance Tensor Either where
 
 newtype EitherK a b = EitherK { unEitherK :: forall r. (a -> r) -> (b -> r) -> r }
 
-instance Bifunctor EitherK where
-  bimap f g e = unEitherK e (left . f) (right . g)
-
 left :: a -> EitherK a b
 left a = EitherK $ \f _ -> f a
 
 right :: b -> EitherK a b
 right a = EitherK $ \_ g -> g a
 
-instance Tensor EitherK where
+instance Bifunctor (->) (->) (->) EitherK where
+  bimap f g e = unEitherK e (left . f) (right . g)
+
+instance Tensor (->) EitherK where
   type Unit EitherK = Void
   {-# inline assoc #-}
   assoc e = unEitherK e (\e' -> unEitherK e' left (right . left)) (right . right)
@@ -83,10 +185,10 @@ fromTupleK a = unTupleK a (,)
 swapK :: TupleK a b -> TupleK b a
 swapK a = unTupleK a $ \x y -> tuple y x
 
-instance Bifunctor TupleK where
+instance Bifunctor (->) (->) (->) TupleK where
   bimap f g t = unTupleK t $ \x y -> tuple (f x) (g y)
 
-instance Tensor TupleK where
+instance Tensor (->) TupleK where
   type Unit TupleK = ()
   {-# inline assoc #-}
   assoc a = unTupleK a $ \x y -> unTupleK x $ \z w -> tuple z (tuple w y)
@@ -101,7 +203,10 @@ instance Tensor TupleK where
   {-# inline unitRightFrom #-}
   unitRightFrom a = tuple a ()
 
-instance Tensor (,) where
+instance Bifunctor (->) (->) (->) (,) where
+  bimap f g (a, b) = (f a, g b)
+
+instance Tensor (->) (,) where
   type Unit (,) = ()
   assoc ((a, b), c) = (a, (b, c))
 
@@ -116,40 +221,45 @@ instance Tensor (,) where
 
 ---- Optics ----
 
-newtype Optic p s t a b
+newtype Optic k p s t a b
   = Optic
   { unOptic
     -- We can't do 'forall x. TupleK (s -> p a x) (p b x -> t)' or something
     -- like it. This way we get true existential quantification on x
-    :: forall r. (forall x. (s -> p a x) -> (p b x -> t) -> r) -> r
+    :: forall r. (forall x. (s `k` p a x) -> (p b x `k` t) -> r) -> r
   }
 
+
 {-# inline idOptic #-}
-idOptic :: Tensor p => Optic p a a a a
+idOptic :: Tensor k p => Optic k p a a a a
 idOptic = Optic $ \f -> f unitRightFrom unitRightTo
 
 {-# inline composeOptic #-}
 composeOptic
-  :: Tensor p
-  => Optic p x y a b
-  -> Optic p s t x y
-  -> Optic p s t a b
+  :: Tensor k p
+  => Optic k p x y a b
+  -> Optic k p s t x y
+  -> Optic k p s t a b
 composeOptic (Optic o1) (Optic o2) =
   o1 $ \xa by ->
   o2 $ \sx yt ->
   Optic $ \f -> f (assoc . first xa . sx) (yt . first by . deassoc)
 
+
 {-# inline o #-}
 o
-  :: Tensor p
-  => Optic p s t x y
-  -> Optic p x y a b
-  -> Optic p s t a b
+  :: Tensor k p
+  => Optic k p s t x y
+  -> Optic k p x y a b
+  -> Optic k p s t a b
 o = flip composeOptic
 
-set :: Tensor p => Optic p s t a b -> b -> s -> t
-set (Optic o1) b = o1 $ \f g -> g . first (const b) . f
+set :: forall k p prod e s t a b. (Symmetric k p, Exponential k prod e) => Optic k p s t a b -> prod b s `k` t
+-- set (Optic o1) b = o1 $ \f g -> g . first (const b) . f
+set (Optic o1) =
+  o1 (\f g -> _ . intro @k @prod fst (f . snd))
 
+{-
 
 ---- Lenses ----
 
@@ -251,3 +361,4 @@ main = do
   print . fst $ set_222' 'b' ('a', undefined)
   print $ set_222' 'b' ('a', ('b', ('c', 'd')))
   print . fst $ set_222'' 'b' ('a', undefined)
+-}
