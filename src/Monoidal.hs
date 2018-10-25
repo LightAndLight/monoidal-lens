@@ -128,9 +128,7 @@ expUncurry =
   prodAssoc . intro fst (prodSwap . snd)
 
 expCurry :: forall arr p e z y x. Exponential arr p e => e z (p y x) `arr` e (e z y) x
-expCurry =
-  curry $
-  _ . intro @arr @p _ snd
+expCurry = _
 
 class Category arr => Initiating (arr :: k -> k -> Type) where
   type Initial arr :: k
