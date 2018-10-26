@@ -130,21 +130,43 @@ class Category arr => Initiating (arr :: k -> k -> Type) where
   initial :: Initial arr `arr` a
 
 class (Category p, Category q, Category r) => Bifunctor p q r (f :: i -> j -> k)
-  | p r -> q, q r -> p -- no idea if these are correct
+  | f -> p q r
   where
   bimap
     :: (a `p` b)
     -> (c `q` d)
     -> (f a c `r` f b d)
 
+class
+  ( Category (p :: i -> i -> Type)
+  , Category (q :: j -> j -> Type)
+  ) => Functor p q (f :: i -> j) | f -> p q where
+
+  fmap :: (a `p` b) -> (f a `q` f b)
+
+type family Fst a where; Fst '(a, b) = a
+type family Snd a where; Snd '(a, b) = b
+
+data ProdCat
+  (p :: i -> i -> Type)
+  (q :: j -> j -> Type)
+  (a :: (i, j))
+  (b :: (i, j)) =
+
+  ProdCat (Fst a `p` Fst b) (Snd a `q` Snd b)
+
+instance (Category p, Category q) => Category (ProdCat p q) where
+  id = ProdCat id id
+  ProdCat f f' . ProdCat g g' = ProdCat (f . g) (f' . g')
+
 -- |
--- Take an (end) functor  f : C * C -> C
+-- Take a bifunctor  f : C * C -> C
 -- if C has products, then C * C is a subcategory of of C (?)
 --
 -- so instead consider the functor   f : C -> C
 -- this functor is strong w.r.t a tensor   t : (C * C) -> C if
--- there's a natural transformation from   a * f(b) -> f(a * b)
-class (Product k p, Tensor k p, Bifunctor k k k f) => StrongBifunctor k p f where
+-- there's a natural transformation from   t(a * f(b)) -> f(t(a * b))
+class (Tensor k p, Bifunctor k k k f) => StrongBifunctor k p f where
   lstrength :: p a (f b c) `k` f (p a b) c
   rstrength :: p a (f b c) `k` f b (p a c)
 
@@ -379,6 +401,7 @@ _Nothing = prism (maybe (inl ()) (inr . Just)) (\() -> Nothing)
 
 ---- Inspection Tests for fusion ----
 
+{-
 get_222, get_222' :: (a, (b, (c, d))) -> d
 get_222 = get (_2 `o` (_2 `o` _2))
 get_222' (_, (_, (_, a))) = a
@@ -405,7 +428,6 @@ preview_LJR' x =
 inspect ('preview_LJR === 'preview_LJR')
 
 
-{-
 review_LJR = review (_Left `o `(_Just `o` _Right))
 review_LJR' = Left . Just . Right
 
