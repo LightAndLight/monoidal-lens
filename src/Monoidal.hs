@@ -110,8 +110,8 @@ firstPower_to = apply . intro id terminal
 firstPower_from :: forall a arr p e. (Terminating arr, Exponential arr p e) => a `arr` e a (Terminal arr)
 firstPower_from = curry fst
 
-expProd_to :: forall arr p e z y x. Exponential arr p e => e (e z y) x `arr` e z (p y x)
-expProd_to =
+expUncurry :: forall arr p e z y x. Exponential arr p e => e (e z y) x `arr` e z (p y x)
+expUncurry =
   curry $
   apply . intro @arr @p (apply . fst) snd .
   prodAssoc . intro fst (prodSwap . snd)
@@ -184,7 +184,7 @@ instance Bifunctor (->) (->) (->) Either where
   bimap f _ (Left a) = Left (f a)
   bimap _ g (Right a) = Right (g a)
 
-class Bifunctor arr arr arr t => Tensor arr (t :: k -> k -> k) where
+class (Category arr, Bifunctor arr arr arr t) => Tensor arr (t :: k -> k -> k) where
   type Unit t :: k
   assoc :: t (t a b) c `arr` t a (t b c)
   deassoc :: t a (t b c) `arr` t (t a b) c
@@ -194,9 +194,6 @@ class Bifunctor arr arr arr t => Tensor arr (t :: k -> k -> k) where
 
   unitRightTo :: t a (Unit t) `arr` a
   unitRightFrom :: a `arr` t a (Unit t)
-
--- left :: Bifunctor p q r t => p a b -> t a c `arr` t b c
--- left = _
 
 instance Tensor (->) Either where
   type Unit Either = Void
